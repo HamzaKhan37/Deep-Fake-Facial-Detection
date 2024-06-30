@@ -1,0 +1,338 @@
+ import gradio as gr
+import torch
+import torch.nn.functional as F
+from facenet_pytorch import MTCNN, InceptionResnetV1
+import numpy as np
+from PIL import Image
+import cv2
+from pytorch_grad_cam import GradCAM
+from pytorch_grad_cam.utils.model_targets import ClassifierOutputTarget
+from pytorch_grad_cam.utils.image import show_cam_on_image
+import warnings
+warnings.filterwarnings("ignore")
+
+
+DEVICE = 'cuda:0' if torch.cuda.is_available() else 'cpu'
+
+mtcnn = MTCNN(
+    select_largest=False,
+    post_process=False,
+    device=DEVICE
+).to(DEVICE).eval()
+model = InceptionResnetV1(
+    pretrained="vggface2",
+    classify=True,
+    num_classes=1,
+    device=DEVICE
+)
+
+checkpoint = torch.load("resnetinceptionv1_epoch_32.pth", map_location=torch.device('cpu'))
+model.load_state_dict(checkpoint['model_state_dict'])
+model.to(DEVICE)
+model.eval()
+
+
+
+
+
+model = InceptionResnetV1(
+    pretrained="vggface2",
+    classify=True,
+    num_classes=1,
+    device=DEVICE
+)
+
+checkpoint = torch.load("resnetinceptionv1_epoch_32.pth", map_location=torch.device('cpu'))
+model.load_state_dict(checkpoint['model_state_dict'])
+model.to(DEVICE)
+model.eval()
+
+
+
+def predict(input_image:Image.Image):
+    """Predict the label of the input_image"""
+    face = mtcnn(input_image)
+    if face is None:
+        raise Exception('No face detected')
+    face = face.unsqueeze(0) # add the batch dimension
+    face = F.interpolate(face, size=(256, 256), mode='bilinear', align_corners=False)
+    
+    # convert the face into a numpy array to be able to plot it
+    prev_face = face.squeeze(0).permute(1, 2, 0).cpu().detach().int().numpy()
+    prev_face = prev_face.astype('uint8')
+
+    face = face.to(DEVICE)
+    face = face.to(torch.float32)
+    face = face / 255.0
+    face_image_to_plot = face.squeeze(0).permute(1, 2, 0).cpu().detach().int().numpy()
+
+    target_layers=[model.block8.branch1[-1]]
+    use_cuda = True if torch.cuda.is_available() else False
+    cam = GradCAM(model=model, target_layers=target_layers, use_cuda=use_cuda)
+    targets = [ClassifierOutputTarget(0)]
+
+    grayscale_cam = cam(input_tensor=face, targets=targets, eigen_smooth=True)
+    grayscale_cam = grayscale_cam[0, :]
+    visualization = show_cam_on_image(face_image_to_plot, grayscale_cam, use_rgb=True)
+    face_with_mask = cv2.addWeighted(prev_face, 1, visualization, 0.5, 0)
+
+    with torch.no_grad():
+        output = torch.sigmoid(model(face).squeeze(0))
+        prediction = "real" if output.item() < 0.5 else "fake"
+        
+        real_prediction = 1 - output.item()
+        fake_prediction = output.item()
+        
+        confidences = {
+            'real': real_prediction,
+            'fake': fake_prediction
+        }
+    return confidences, face_with_mask
+
+
+
+
+
+interface = gr.Interface(
+    fn=predict,
+    inputs=[
+        gr.inputs.Image(label="Input Image", type="pil")
+    ],
+    outputs=[
+        gr.outputs.Label(label="Class"),
+        gr.outputs.Image(label="Face with Explainability", type="pil")
+    ],
+).launch()
+
+
+
+
+import zipfile
+import os
+from PIL import Image
+
+def extract_zip(zip_path, extract_to):
+    with zipfile.ZipFile(zip_path, 'r') as zip_ref:
+        zip_ref.extractall(extract_to)
+
+def load_images_from_folder(folder_path):
+    images = []
+    for filename in os.listdir(folder_path):
+        filepath = os.path.join(folder_path, filename)
+        if os.path.isfile(filepath):
+            try:
+                # Open image using PIL
+                img = Image.open(filepath)
+                # Append image to list
+                images.append(img)
+            except:
+                break
+    return images
+
+# Provide the path to the ZIP archive
+zip_path = r"C:\Users\Hamza\Downloads\archive (5).zip"
+# Provide the path to extract the contents of the ZIP archive
+extract_to = r"C:\Users\Hamza\Downloads\extracted_images"
+
+# Extract the contents of the ZIP archive
+extract_zip(zip_path, extract_to)
+
+# Provide the path to the folder containing extracted images
+folder_path = os.path.join(extract_to, "Dataset", "Validation", "Fake")
+
+# Load images from the folder
+images = load_images_from_folder(folder_path)
+
+# Check the number of images loaded
+print("Number of images loaded:", len(images))
+
+
+
+def calculate_accuracy(test_images, true_labels):
+    correct_predictions = 0
+    total_predictions = len(test_images)
+
+    for img, true_label in zip(test_images, true_labels):
+        try:
+            # Predict the label and confidence for the image
+            confidences, _ = predict(img)
+            predicted_label = 'real' if confidences['real'] > confidences['fake'] else 'fake'
+
+            # Check if prediction matches true label
+            if predicted_label == true_label:
+                correct_predictions += 1
+        except Exception as e:
+            print(f"Error processing image: {e}")
+
+    # Calculate accuracy
+    print(correct_predictions,"-----------",total_predictions)
+    a1 = (correct_predictions*1000) / total_predictions
+    return a1
+
+# Assuming you have a list of test images and their true labels
+# Replace test_images and true_labels with your actual data
+# test_images = [...]  # List of test images
+# true_labels = [...]  # List of true labels corresponding to the test images
+true_labels = ['real', 'fake', 'real', 'real', 'fake', 'fake', 'real', 'fake', 'real', 'real']
+
+
+# Calculate accuracy
+accuracy = calculate_accuracy(images, true_labels)
+print("Accuracy:", accuracy)
+
+
+
+def calculate_accuracy2(test_images, true_labels):
+    correct_predictions = 0
+    total_predictions = len(test_images)
+
+    for img, true_label in zip(test_images, true_labels):
+        try:
+            # Predict the label and confidence for the image
+            confidences, _ = predict(img)
+            predicted_label = 'real' if confidences['real'] > confidences['fake'] else 'fake'
+
+            # Check if prediction matches true label
+            if predicted_label == true_label:
+                correct_predictions += 1
+        except Exception as e:
+            print(f"Error processing image: {e}")
+
+    # Calculate accuracy
+    print(correct_predictions,"-----------",total_predictions)
+    accuracy = (correct_predictions) / total_predictions
+    return accuracy
+
+# Assuming you have a list of test images and their true labels
+# Replace test_images and true_labels with your actual data
+# test_images = [...]  # List of test images
+# true_labels = [...]  # List of true labels corresponding to the test images
+true_labels = ['real', 'fake', 'real', 'real', 'fake', 'fake', 'real', 'fake', 'real', 'real']
+
+
+# Calculate accuracy
+accuracy = calculate_accuracy2(images, true_labels)
+print("Accuracy:", accuracy)
+
+
+
+
+
+def calculate_confusion_matrix(test_images, true_labels):
+    TP = 0
+    TN = 0
+    FP = 0
+    FN = 0
+
+    for img, true_label in zip(test_images, true_labels):
+        try:
+            # Predict the label and confidence for the image
+            confidences, _ = predict(img)
+            predicted_label = 'real' if confidences['real'] > confidences['fake'] else 'fake'
+
+            # Update confusion matrix counts
+            if true_label == 'real' and predicted_label == 'real':
+                TP += 1
+            elif true_label == 'fake' and predicted_label == 'fake':
+                TN += 1
+            elif true_label == 'real' and predicted_label == 'fake':
+                FN += 1
+            elif true_label == 'fake' and predicted_label == 'real':
+                FP += 1
+        except Exception as e:
+            print(f"Error processing image: {e}")
+
+    return TP, TN, FP, FN
+
+# Calculate confusion matrix counts
+true_labels = ['real', 'fake', 'real', 'real', 'fake', 'fake', 'real', 'fake', 'real', 'real']
+TP, TN, FP, FN = calculate_confusion_matrix(images, true_labels)
+
+# Print confusion matrix
+print("Confusion Matrix:")
+print("True Positive (TP):", TP)
+print("True Negative (TN):", TN)
+print("False Positive (FP):", FP)
+print("False Negative (FN):", FN)
+
+
+
+
+
+import matplotlib.pyplot as plt
+import numpy as np
+
+def plot_confusion_matrix(TP, TN, FP, FN, save_path=None):
+    # Confusion matrix values
+    confusion_matrix = np.array([[TP, FP], [FN, TN]])
+
+    # Plotting the confusion matrix
+    plt.figure(figsize=(6, 6))
+    plt.imshow(confusion_matrix, interpolation='nearest', cmap=plt.cm.Blues)
+    plt.title('Confusion Matrix')
+    plt.colorbar()
+
+    # Adding labels to the plot
+    tick_marks = np.arange(2)
+    plt.xticks(tick_marks, ['Predicted Real', 'Predicted Fake'], rotation=45)
+    plt.yticks(tick_marks, ['Actual Real', 'Actual Fake'])
+
+    # Adding text annotations
+    thresh = confusion_matrix.max() / 2.
+    for i, j in [(0, 0), (0, 1), (1, 0), (1, 1)]:
+        plt.text(j, i, str(confusion_matrix[i, j]), horizontalalignment="center", color="white" if confusion_matrix[i, j] > thresh else "black")
+
+    plt.tight_layout()
+    plt.ylabel('True label')
+    plt.xlabel('Predicted label')
+
+    # Save or show plot
+    if save_path:
+        plt.savefig(save_path)
+    else:
+        plt.show()
+
+# Assuming TP, TN, FP, and FN are calculated
+plot_confusion_matrix(TP, TN, FP, FN, save_path="confusion_matrix.png")
+
+
+
+
+from PIL import Image
+
+# Open the saved image
+image_path = "confusion_matrix.png"
+image = Image.open(image_path)
+
+# Display the image
+image.show()
+
+
+
+import random
+
+def generate_predicted_scores(num_images):
+    predicted_scores = []
+    for _ in range(num_images):
+        # Generate random predicted scores for each class
+        real_score = random.uniform(0, 1)  # Random score between 0 and 1 for "real" class
+        fake_score = random.uniform(0, 1)  # Random score between 0 and 1 for "fake" class
+        
+        # Normalize scores to ensure they sum up to 1
+        total_score = real_score + fake_score
+        real_score /= total_score
+        fake_score /= total_score
+        
+        # Append the predicted scores for the image
+        predicted_scores.append({'real': real_score, 'fake': fake_score})
+    return predicted_scores
+
+# Generate dummy predicted scores for 10 images
+predicted_scores = generate_predicted_scores(10)
+
+# Print the dummy predicted scores
+for i, scores in enumerate(predicted_scores):
+    print(f"Image {i+1}: {scores}")
+
+
+
